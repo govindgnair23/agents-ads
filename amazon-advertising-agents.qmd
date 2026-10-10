@@ -1,0 +1,670 @@
+---
+title: "When shopping agents replace Amazon advertising"
+subtitle: "A reproducible scenario analysis of seller costs, replacement fees, and consumer prices"
+date: "2026-10-09"
+date-format: long
+lang: en
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    number-sections: true
+    code-fold: true
+    code-tools: true
+    embed-resources: true
+    theme: cosmo
+jupyter: python3
+execute:
+  echo: true
+  warning: false
+  error: false
+  cache: false
+---
+
+## Research question and result
+
+If shopping agents replace paid product discovery on Amazon, can merchants'
+advertising savings offset the fees Amazon might impose to recover lost profit?
+
+**Yes, under some reasonable conditional scenarios.** With the default
+assumptions below, removing 80% of advertising expenditure saves a seller that
+previously spent 10% of revenue on ads eight dollars per hundred dollars of
+original sales. Replacing the lost contribution from third-party seller ads
+requires approximately $4.68 in extra fees per hundred dollars of seller sales.
+At 50% price pass-through, that seller's product prices fall approximately 1.66%.
+Sellers with little advertising expenditure can instead face higher prices.
+
+The model is a **first-order accounting and incidence exercise**, not an
+estimated demand model or a prediction of Amazon's optimal response. It calculates
+the fee equivalents required by specified recovery targets, rather than proving
+Amazon can impose those fees without losing customers or sellers. The sensitivity
+grid describes conditional outcomes; its rows have no assigned probabilities.
+
+## Reproducing the analysis
+
+This document contains all analysis code and numerical inputs. It does not import
+the earlier `simulate.py`, read existing CSV files, call APIs, or require access to
+Amazon accounts. The sources are a frozen calibration, dated October 9, 2026.
+
+Install [Quarto](https://quarto.org/docs/get-started/) and Python 3.12, then run
+these commands from the directory containing this document and `requirements.txt`:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m ipykernel install --sys-prefix --name python3 --display-name "Python 3"
+quarto render amazon-advertising-agents.qmd
+```
+
+On Windows, use `.venv\Scripts\activate` instead of the `source` command. If Quarto
+selects another Python installation, set `QUARTO_PYTHON` to the virtual
+environment's Python executable before rendering. Rendering produces a standalone
+HTML report and a `quarto-outputs/` directory with CSV, JSON, PNG, PDF, and runtime
+metadata. No random sampling is used, so a random seed is unnecessary.
+
+## Public evidence and calibration
+
+### Financial inputs
+
+Amazon's [FY2025 Form 10-K](https://www.sec.gov/Archives/edgar/data/1018724/000101872426000004/amzn-20251231.htm)
+reports advertising revenue of $68.635 billion, seller-services revenue of
+$172.162 billion, and consolidated operating income of $79.975 billion. North
+America and International operating income sum to $34.369 billion; AWS earned
+$45.606 billion. Advertising includes sponsored, display, and video ads purchased
+by sellers, vendors, publishers, authors, and others. Amazon does not report
+advertising as a separate operating-profit segment.
+
+[Marketplace Pulse estimates](https://www.marketplacepulse.com/articles/amazon-gmv-surpassed-800-billion-in-2025)
+2025 worldwide third-party merchandise sales at $575 billion. This is an external
+GMV estimate, not audited Amazon revenue. Seller-services revenue measures
+commissions and services; it is not the appropriate denominator for a fee
+expressed as a percentage of merchants' sales. We use GMV for that denominator.
+
+### Seller advertising benchmarks
+
+The relevant metric is **total advertising cost of sales (TACoS)**: advertising
+expenditure divided by all seller revenue, including organic sales. Ad cost divided
+only by ad-attributed revenue (ACoS) would overstate the account-wide cost burden.
+
+| Evidence | Finding | Interpretation |
+|---|---|---|
+| [Marketplace Pulse, February 2023](https://www.marketplacepulse.com/articles/amazon-takes-a-50-cut-of-sellers-revenue) | Many resellers spend less than 5% of sales; private-label sellers often spend more than 10%; sampled P&Ls show advertising and promotion burdens up to 15%. | Older, selected seller accounts; useful for heterogeneous scenarios, not a representative population estimate. |
+| [SellerPlex, H1 2026](https://sellerplex.com/amazon-ppc-benchmarks-2026/) | Median TACoS 15%; middle half 10–21%; 36 managed US accounts with total-sales data. | Recent direct managed-account observations, but selected advertisers and an account-weighted median. |
+
+The managed-account median must not be applied to all marketplace sales. Even if
+third-party sellers funded *all* $68.635 billion of Amazon advertising, the implied
+sales-weighted expenditure would be only $68.635/$575 = 11.94%. Some advertising is
+funded by other customers. An individual seller can spend well above this
+marketplace average. This bound assumes the cited sales and advertising measures
+are comparable; it is a consistency check, not a directly observed seller statistic.
+
+### Editable inputs
+
+All financial values below are in **billions of US dollars**. Rates are fractions,
+so `0.10` means 10%. Change these constants to rerun the report.
+
+```{python}
+#| label: setup-and-inputs
+import csv
+import itertools
+import json
+import platform
+from pathlib import Path
+from importlib.metadata import version
+
+import numpy as np
+import matplotlib
+import matplotlib.pyplot as plt
+
+OUT = Path("quarto-outputs")
+OUT.mkdir(exist_ok=True)
+
+# Public inputs: Amazon 2025 10-K and Marketplace Pulse GMV estimate.
+AD_REVENUE_BN = 68.635
+SELLER_GMV_BN = 575.0
+SELLER_SERVICES_REVENUE_BN = 172.162
+OPERATING_INCOME_BN = 79.975
+NA_OPERATING_INCOME_BN = 29.619
+INTL_OPERATING_INCOME_BN = 4.750
+AWS_OPERATING_INCOME_BN = 45.606
+
+# Illustrative assumptions, not publicly measured Amazon parameters.
+SELLER_AD_SHARE = 0.70
+AD_REMOVAL = 0.80
+LOST_CONTRIBUTION = 0.70
+PRICE_PASS_THROUGH = 0.50
+DEFAULT_AGENT_FEE = 0.0
+
+# Implied SALES-WEIGHTED average; not a measured typical-seller TACoS.
+AVERAGE_AD_RATE = SELLER_AD_SHARE * AD_REVENUE_BN / SELLER_GMV_BN
+
+plt.rcParams.update({
+    "font.family": "DejaVu Sans", "font.size": 10,
+    "axes.spines.top": False, "axes.spines.right": False,
+})
+
+def md_table(headers, rows):
+    """Emit a Markdown table without a dependency on pandas or tabulate."""
+    print("| " + " | ".join(headers) + " |")
+    print("| " + " | ".join(["---"] * len(headers)) + " |")
+    for row in rows:
+        print("| " + " | ".join(str(x).replace("|", "\\|") for x in row) + " |")
+    print()
+
+def pct(x, signed=False):
+    if abs(x) < 1e-12:
+        x = 0.0
+    return format(x, "+.2%" if signed else ".2%")
+
+def export_csv(name, rows):
+    with (OUT / name).open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+def save_figure(fig, stem):
+    fig.savefig(OUT / f"{stem}.png", dpi=180, bbox_inches="tight")
+    fig.savefig(OUT / f"{stem}.pdf", bbox_inches="tight")
+```
+
+```{python}
+#| label: assumption-table
+#| output: asis
+md_table(["Assumption", "Default", "Role"], [
+    ["Third-party sellers' share of all ad revenue", pct(SELLER_AD_SHARE),
+     "Calibrates average seller spending and seller-ad exposure"],
+    ["Advertising expenditure removed", pct(AD_REMOVAL),
+     "Savings and exposed revenue loss"],
+    ["Lost contribution per dollar of ad revenue removed", pct(LOST_CONTRIBUTION),
+     "After costs avoided; not a disclosed advertising margin"],
+    ["Price pass-through", pct(PRICE_PASS_THROUGH),
+     "Price response to net incremental cost"],
+    ["Replacement agent fee / original sales", pct(DEFAULT_AGENT_FEE),
+     "Additional merchant cost"],
+    ["Implied sales-weighted seller TACoS", pct(AVERAGE_AD_RATE),
+     "Derived from the assumed ad-funding share, not observed"],
+])
+```
+
+## Model
+
+Let $A$ be all Amazon ad revenue, $G$ third-party GMV, $s$ the share of ad revenue
+funded by third-party sellers, $d$ the fraction of relevant ads removed, $m$ the
+lost contribution per dollar of removed advertising, $r$ the share of lost
+contribution Amazon tries to recover, $q$ the fraction of original fee-paying
+sales retained, $a_i$ seller $i$'s original TACoS, $k$ the replacement agent fee
+per dollar of original sales, and $\lambda$ price pass-through.
+
+There are two exposure scopes:
+
+$$
+E = \begin{cases}
+sA & \text{seller-funded advertising only},\\
+A & \text{broad advertising loss}.
+\end{cases}
+$$
+
+The resulting contribution loss, fee target, fee equivalent, seller savings,
+and approximate consumer price response are:
+
+$$
+L=dmE,\qquad F=rL,\qquad f=\frac{F}{qG},\qquad
+S_i=da_i,\qquad \frac{\Delta P_i}{P_i}\approx\lambda(f+k-da_i).
+$$
+
+**Interpretation:** $f=0.0468$ represents $4.68 of new fees per $100 of original
+retained sales. It is not a 4.68% proportional increase to existing fees. The
+denominator uses original prices, so this is a dollar-equivalent surcharge model,
+not an exact solution for a newly imposed ad-valorem commission.
+
+The baseline fixes quantity and the remaining seller mix. Pass-through is an
+assumed reduced-form response, not a claim that margins or dollar profits stay
+constant. Existing percentage commissions, price-dependent GMV, and demand
+feedback are excluded. Recovering lost contribution also assumes negligible
+incremental collection costs for replacement fees.
+
+For $\lambda>0$ and $d>0$, the seller's break-even original TACoS is:
+
+$$
+a_i^*=\frac{f+k}{d}.
+$$
+
+Sellers above this threshold have room for price reductions. Sellers below it
+face higher net costs. With zero pass-through, modeled prices do not change.
+
+```{python}
+#| label: model-function
+def scenario(ad_rate, *, seller_ad_share=SELLER_AD_SHARE,
+             removal=AD_REMOVAL, contribution=LOST_CONTRIBUTION,
+             recovery=1.0, scope="seller", retained_base=1.0,
+             pass_through=PRICE_PASS_THROUGH, agent_fee=DEFAULT_AGENT_FEE):
+    """Conditional, first-order price incidence; all rates use original sales."""
+    rates = [ad_rate, seller_ad_share, removal, contribution, recovery,
+             pass_through, agent_fee]
+    if not all(0 <= value <= 1 for value in rates):
+        raise ValueError("Rates must lie between zero and one.")
+    if not 0 < retained_base <= 1:
+        raise ValueError("retained_base must lie in (0, 1].")
+    if scope not in {"seller", "all"}:
+        raise ValueError("scope must be 'seller' or 'all'.")
+
+    exposure = AD_REVENUE_BN * (seller_ad_share if scope == "seller" else 1)
+    loss = removal * contribution * exposure
+    fees = recovery * loss
+    fee_rate = fees / (retained_base * SELLER_GMV_BN)
+    saved_rate = removal * ad_rate
+    price_change = pass_through * (fee_rate + agent_fee - saved_rate)
+    return {
+        "ad_rate": ad_rate, "seller_ad_share": seller_ad_share,
+        "removal": removal, "contribution": contribution,
+        "recovery": recovery, "scope": scope, "retained_base": retained_base,
+        "pass_through": pass_through, "agent_fee": agent_fee,
+        "lost_ad_contribution_bn": loss, "incremental_fees_bn": fees,
+        "fee_rate": fee_rate, "saved_ad_rate": saved_rate,
+        "price_change": price_change, "price_from_100": 100 * (1 + price_change),
+        "break_even_tacos": (fee_rate + agent_fee) / removal if removal else None,
+    }
+
+SPECS = [
+    ("No replacement fees", {"recovery": 0}),
+    ("Recover half of lost seller-ad contribution", {"recovery": 0.5}),
+    ("Recover all lost seller-ad contribution", {}),
+    ("Recover broad ad losses from sellers", {"scope": "all"}),
+    ("Broad losses; fee-paying sales shrink 20%", {"scope": "all", "retained_base": 0.8}),
+]
+
+base_rows = [
+    {"scenario": name, **scenario(a, **kwargs)}
+    for name, kwargs in SPECS
+    for a in [0, 0.03, 0.05, 0.10, 0.15, 0.20, AVERAGE_AD_RATE]
+]
+average_rows = [
+    {"scenario": name, **scenario(AVERAGE_AD_RATE, **kwargs)}
+    for name, kwargs in SPECS
+]
+export_csv("scenarios.csv", base_rows)
+export_csv("average_seller.csv", average_rows)
+```
+
+## Central scenarios
+
+The first three scenarios remove seller-funded ads. The fourth and fifth assume
+the same percentage collapse across *all* Amazon advertising, including businesses
+outside seller search. They are deliberately broader stress cases and assign the
+entire replacement burden to third-party merchants.
+
+The final scenario divides the same ad-contribution recovery target by 80% of the
+original fee base. It does **not** add a target for lost legacy commissions or
+fulfillment contribution, and does not model the costs Amazon avoids when sales
+leave. It is an exogenous base-shrink stress, not a demand forecast.
+
+```{python}
+#| label: central-results-table
+#| output: asis
+rows = []
+for name, kwargs in SPECS:
+    result = scenario(0.10, **kwargs)
+    changes = [pct(scenario(a, **kwargs)["price_change"], True)
+               for a in [0.03, 0.10, 0.15]]
+    rows.append([name, f"${result['incremental_fees_bn']:.2f}bn",
+                 pct(result["fee_rate"]), *changes])
+md_table(["Amazon response", "Fee revenue target", "New fees / original sales",
+          "Price change: 3% TACoS", "10% TACoS", "15% TACoS"], rows)
+md_table(["Amazon response", "Price change at assumed sales-weighted average",
+          "Break-even original TACoS"], [
+    [r["scenario"], pct(r["price_change"], True), pct(r["break_even_tacos"])]
+    for r in average_rows
+])
+```
+
+```{python}
+#| label: fig-central
+#| fig-cap: "Conditional price changes by original seller advertising burden and at the assumed sales-weighted average. Negative values indicate lower consumer prices."
+#| fig-width: 13
+#| fig-height: 5.5
+fig, (ax, bx) = plt.subplots(1, 2, figsize=(13, 5.5),
+                             gridspec_kw={"width_ratios": [1.6, 1]})
+colors = ["#9babc2", "#6395cb", "#176861", "#c38a2a", "#b24b4b"]
+labels = ["No fees", "Half seller-ad recovery", "Full seller-ad recovery",
+          "Broad ad recovery", "Broad recovery; base -20%"]
+x = np.linspace(0, 0.20, 201)
+for (_, kwargs), label, color in zip(SPECS, labels, colors):
+    y = [100 * scenario(a, **kwargs)["price_change"] for a in x]
+    ax.plot(100*x, y, label=label, color=color, linewidth=2.3)
+ax.axhline(0, color="#566273", linewidth=1)
+ax.axvline(100*AVERAGE_AD_RATE, color="#566273", linestyle=":")
+ax.set(xlabel="Original seller TACoS (%)", ylabel="Consumer price change (%)",
+       title="Different sellers experience different outcomes")
+ax.legend(fontsize=8, frameon=False)
+ax.grid(axis="y", alpha=0.15)
+values = [100*r["price_change"] for r in average_rows]
+bx.barh(labels, values, color=colors)
+bx.axvline(0, color="#566273", linewidth=1)
+for i, value in enumerate(values):
+    bx.text(value + (0.07 if value >= 0 else -0.07), i, f"{value:+.2f}%",
+            ha="left" if value >= 0 else "right", va="center", fontsize=9)
+bx.invert_yaxis()
+bx.set(xlim=(min(values)-1, max(values)+1), xlabel="Consumer price change (%)",
+       title=f"Assumed average TACoS: {AVERAGE_AD_RATE:.2%}")
+fig.tight_layout()
+save_figure(fig, "central_outcomes")
+plt.show()
+```
+
+### Worked example and the accounting intuition
+
+```{python}
+#| label: worked-example
+#| output: asis
+example = scenario(0.10)
+print(f"For **$100 of original sales**, the seller previously spent $10 on ads. "
+      f"Removing {AD_REMOVAL:.0%} saves **${100*example['saved_ad_rate']:.2f}**. "
+      f"Full recovery of lost seller-ad contribution adds "
+      f"**${100*example['fee_rate']:.2f}** in fees. Net cost falls by "
+      f"**${100*(example['saved_ad_rate']-example['fee_rate']):.2f}**. "
+      f"At {PRICE_PASS_THROUGH:.0%} pass-through, the modeled price becomes "
+      f"**${example['price_from_100']:.2f}**.\n")
+```
+
+Merchants save *expenditure*, while Amazon's recovery target is lost
+*contribution*. The difference is any advertising costs avoided. This gap is not
+guaranteed: when costs remain fixed, the lost contribution fraction can approach
+100%, leaving little aggregate saving if Amazon recovers everything.
+
+For the assumed sales-weighted average, $\bar a=sA/G$. With no agent fee and no
+fee-base shrink, full recovery of seller-ad contribution gives:
+
+$$
+\frac{\Delta\bar P}{\bar P}
+\approx -\lambda d\frac{sA}{G}(1-m).
+$$
+
+Thus, at full recovery, the aggregate saving in this accounting model comes from
+avoided costs. Partial recovery also leaves some former platform contribution
+with merchants and potentially consumers.
+
+When sellers cover *all* broad advertising losses, the average response is:
+
+$$
+\frac{\Delta\bar P}{\bar P}
+\approx \lambda\left[\frac{dA}{G}(rm-s)+k\right].
+$$
+
+With $r=1$, $k=0$, and the default $m=s=0.70$, the broad-loss average happens to be
+zero. That equality is a consequence of the assumptions, not an economic law.
+
+## Sensitivity and tipping points
+
+### Advertising contribution uncertainty
+
+The contribution fraction is the **profit lost after costs avoided**, rather than
+an observed historical operating margin. A short-run removal can have a higher
+fraction than a longer-run removal if staff or infrastructure costs remain fixed.
+We vary it from 50% to 90%, keeping the other defaults and full recovery.
+
+```{python}
+#| label: contribution-sensitivity
+#| output: asis
+margin_rows = []
+for scope in ["seller", "all"]:
+    for m in [0.50, 0.70, 0.90]:
+        r = scenario(0.10, contribution=m, scope=scope)
+        avg = scenario(AVERAGE_AD_RATE, contribution=m, scope=scope)
+        margin_rows.append({"scope_label": scope, **r,
+                           "average_price_change": avg["price_change"]})
+export_csv("contribution_sensitivity.csv", margin_rows)
+md_table(["Loss scope", "Lost contribution fraction", "Fee target",
+          "New fee rate", "Price change: 10% TACoS", "Assumed-average price change"], [
+    [r["scope_label"], pct(r["contribution"]),
+     f"${r['incremental_fees_bn']:.2f}bn", pct(r["fee_rate"]),
+     pct(r["price_change"], True), pct(r["average_price_change"], True)]
+    for r in margin_rows
+])
+```
+
+### Price pass-through and replacement agent fees
+
+Pass-through scales the price effect without changing its sign when positive.
+If merchants retain all savings, modeled consumer prices do not fall. Conversely,
+more intense price competition can transmit a larger share. No elasticity or
+market-power estimate is used to select the default 50%.
+
+Every additional agent fee of 1% of original sales raises the modeled price by
+0.5 percentage points at the default pass-through. Agent fees can therefore
+absorb much of the saving, even when paid placement disappears.
+
+```{python}
+#| label: incidence-and-agent-fees
+#| output: asis
+incidence_rows = [scenario(0.10, pass_through=p, agent_fee=k)
+                  for p in [0, 0.25, 0.50, 1.0] for k in [0, 0.01, 0.03]]
+export_csv("pass_through_agent_fees.csv", incidence_rows)
+md_table(["Price pass-through", "Agent fee / original sales",
+          "Price change: 10% TACoS, full seller-ad recovery"], [
+    [pct(r["pass_through"]), pct(r["agent_fee"]), pct(r["price_change"], True)]
+    for r in incidence_rows
+])
+```
+
+### Consistent average-seller sensitivity
+
+For each assumed seller-funded share $s$, the average seller's original
+advertising expenditure is recalibrated as $sA/G$. This differs from holding one
+individual seller's TACoS constant. The chart below illustrates the broad-loss
+case: the average price change switches sign when $rm=s$, given $q=1$ and $k=0$.
+
+```{python}
+#| label: fig-tipping-points
+#| fig-cap: "Broad advertising-loss recovery: average price effects as the assumed seller-funded ad share and lost contribution fraction vary. The dashed line marks neutrality under full recovery, no agent fee, and an unchanged fee base."
+#| fig-width: 8
+#| fig-height: 5
+shares = np.linspace(0.40, 0.90, 101)
+margins = np.linspace(0.40, 1.00, 121)
+z = np.array([[100*scenario(s*AD_REVENUE_BN/SELLER_GMV_BN,
+                            seller_ad_share=s, contribution=m, scope="all")
+               ["price_change"] for s in shares] for m in margins])
+fig, ax = plt.subplots(figsize=(8, 5))
+limit = max(abs(z.min()), abs(z.max()))
+image = ax.pcolormesh(100*shares, 100*margins, z, cmap="RdBu_r",
+                     vmin=-limit, vmax=limit, shading="auto")
+ax.contour(100*shares, 100*margins, z, levels=[0], colors="black", linestyles="--")
+ax.scatter([100*SELLER_AD_SHARE], [100*LOST_CONTRIBUTION],
+           color="black", marker="x", s=70, label="Default assumptions")
+ax.set(xlabel="Share of all Amazon ads funded by third-party sellers (%)",
+       ylabel="Lost contribution / removed ad revenue (%)")
+ax.legend(frameon=False)
+fig.colorbar(image, ax=ax, label="Average consumer price change (%)")
+fig.tight_layout()
+save_figure(fig, "average_tipping_points")
+plt.show()
+```
+
+### Fee-base shrink and the recovery target
+
+Keeping the original broad ad-loss target fixed while the fee-paying base shrinks
+requires larger fee equivalents. The same seller mix is assumed to remain. This
+is not a model of how much agents actually divert to other stores.
+
+```{python}
+#| label: fee-base-stress
+#| output: asis
+base_stress = [scenario(0.10, scope="all", retained_base=q)
+               for q in [1.0, 0.9, 0.8, 0.6]]
+export_csv("fee_base_stress.csv", base_stress)
+md_table(["Original fee-paying sales retained", "New fees / retained original sales",
+          "Price change: 10% TACoS", "Break-even TACoS"], [
+    [pct(r["retained_base"]), pct(r["fee_rate"]),
+     pct(r["price_change"], True), pct(r["break_even_tacos"])] for r in base_stress
+])
+```
+
+If merchants leave, Amazon also loses some legacy commerce contribution and avoids
+some costs. Neither is added here because public aggregate data do not identify
+the contribution of those departing transactions. Assuming the same ad-loss
+target despite departure is a conditional stress choice.
+
+## Amazon's profit exposure
+
+Amazon was profitable overall in 2025. Its non-AWS segments include retail,
+marketplace services, advertising, and subscriptions; their combined operating
+income is not a clean measure of retail profit excluding advertising.
+
+The table subtracts modeled lost ad contribution from historical operating
+income before any response, then adds the modeled fee recovery. It assumes the
+exposed ads sit in the non-AWS segments and everything else remains constant.
+It is a budget bridge, not a future earnings forecast. The base-shrink scenario
+is omitted because the unknown legacy commerce contribution loss would make
+that bridge incomplete.
+
+```{python}
+#| label: profit-budget
+#| output: asis
+profit_rows = []
+non_aws = NA_OPERATING_INCOME_BN + INTL_OPERATING_INCOME_BN
+for name, kwargs in SPECS[:4]:
+    r = scenario(AVERAGE_AD_RATE, **kwargs)
+    loss, fees = r["lost_ad_contribution_bn"], r["incremental_fees_bn"]
+    profit_rows.append({
+        "scenario": name, "lost_ad_contribution_bn": loss,
+        "fee_recovery_bn": fees,
+        "non_aws_before_recovery_bn": non_aws-loss,
+        "non_aws_after_recovery_bn": non_aws-loss+fees,
+        "consolidated_before_recovery_bn": OPERATING_INCOME_BN-loss,
+        "consolidated_after_recovery_bn": OPERATING_INCOME_BN-loss+fees,
+    })
+export_csv("profit_budget.csv", profit_rows)
+md_table(["Scenario", "Ad contribution lost", "Non-AWS income before recovery",
+          "Non-AWS after recovery", "Consolidated before recovery"], [
+    [r["scenario"], *[f"${r[key]:.2f}bn" for key in [
+        "lost_ad_contribution_bn", "non_aws_before_recovery_bn",
+        "non_aws_after_recovery_bn", "consolidated_before_recovery_bn"]]]
+    for r in profit_rows
+])
+```
+
+Loss of advertising can create pressure for higher fees without implying that
+consumer prices must rise. The same payment is a seller expense and platform
+revenue. Accounting for both sides is essential.
+
+## Complete sensitivity grid and validation
+
+The following deterministic grid spans individual seller TACoS, seller-funded
+ad share, ad removal, lost contribution, recovery targets, exposure scope,
+pass-through, and replacement agent fees. It retains the full original fee base;
+the separate stress table covers base shrink. Each individual seller is one
+hypothetical account, not an assertion that every account spends that amount.
+
+Changing the number or spacing of grid points would change the fraction of rows
+showing a price rise. **That fraction would not be a probability**, so it is not
+reported as one. Some points also have identical price outcomes because the
+seller-funded share affects seller exposure but not broad exposure.
+
+```{python}
+#| label: grid-validation-and-exports
+#| output: asis
+grid_axes = {
+    "ad_rate": [0, 0.03, 0.05, 0.10, 0.15, 0.20],
+    "seller_ad_share": [0.50, 0.70, 0.80],
+    "removal": [0.50, 0.80, 1.0],
+    "contribution": [0.50, 0.70, 0.90],
+    "recovery": [0, 0.50, 1.0],
+    "scope": ["seller", "all"],
+    "pass_through": [0.25, 0.50, 1.0],
+    "agent_fee": [0, 0.01, 0.03],
+}
+grid_rows = [scenario(**dict(zip(grid_axes, values)))
+             for values in itertools.product(*grid_axes.values())]
+export_csv("sensitivity_grid.csv", grid_rows)
+
+# Check accounting identities and economically relevant boundary conditions.
+for r in base_rows + grid_rows + margin_rows + incidence_rows + base_stress:
+    assert np.isclose(r["fee_rate"] * r["retained_base"] * SELLER_GMV_BN,
+                      r["incremental_fees_bn"])
+    assert np.isclose(r["incremental_fees_bn"],
+                      r["recovery"] * r["lost_ad_contribution_bn"])
+    assert np.isclose(r["price_change"], r["pass_through"] *
+                      (r["fee_rate"] + r["agent_fee"] - r["saved_ad_rate"]))
+assert np.isclose(scenario(0.10, removal=0)["price_change"], 0)
+assert np.isclose(scenario(0.10, pass_through=0)["price_change"], 0)
+assert np.isclose(scenario(0.10, recovery=0)["fee_rate"], 0)
+assert np.isclose(scenario(AVERAGE_AD_RATE, contribution=1)["price_change"], 0)
+assert np.isclose(scenario(0.10, agent_fee=0.01)["price_change"] -
+                  scenario(0.10)["price_change"], PRICE_PASS_THROUGH*0.01)
+assert len(grid_rows) == np.prod([len(v) for v in grid_axes.values()])
+assert np.isclose(non_aws + AWS_OPERATING_INCOME_BN, OPERATING_INCOME_BN)
+
+summary = {
+    "as_of": "2026-10-09",
+    "units": "USD billions; rates as fractions of original seller sales",
+    "public_inputs": {"ad_revenue_bn": AD_REVENUE_BN, "seller_gmv_bn": SELLER_GMV_BN,
+                      "operating_income_bn": OPERATING_INCOME_BN},
+    "assumptions": {"seller_ad_share": SELLER_AD_SHARE, "ad_removal": AD_REMOVAL,
+                    "lost_contribution": LOST_CONTRIBUTION,
+                    "price_pass_through": PRICE_PASS_THROUGH,
+                    "replacement_agent_fee": DEFAULT_AGENT_FEE},
+    "implied_average_tacos": AVERAGE_AD_RATE,
+    "average_scenarios": average_rows,
+    "grid_axes": grid_axes, "grid_rows": len(grid_rows),
+    "validation": "All identities and boundary checks passed",
+}
+(OUT / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+runtime = {"python": platform.python_version(), "platform": platform.platform(),
+           "numpy": np.__version__, "matplotlib": matplotlib.__version__}
+for package in ["ipykernel", "nbclient", "nbformat", "jupyter"]:
+    try:
+        runtime[package] = version(package)
+    except Exception:
+        runtime[package] = "not installed in this execution environment"
+(OUT / "runtime.json").write_text(json.dumps(runtime, indent=2), encoding="utf-8")
+print(f"Executed **{len(base_rows):,} central rows** and "
+      f"**{len(grid_rows):,} sensitivity-grid rows**. All accounting identities "
+      "and boundary checks passed.\n")
+print("Generated numerical exports and publication-ready figures in "
+      "`quarto-outputs/`.\n")
+```
+
+## Interpretation and limits
+
+The analysis supports the original counterargument: merchants' advertising
+savings can offset replacement fees. With full recovery, the average seller
+benefits in the seller-ad-only case when Amazon avoids some ad costs. Under a
+broad loss shifted to sellers, the result depends on the lost contribution
+fraction relative to the seller-funded share of advertising.
+
+Uniform fees redistribute costs. An advertiser previously spending 15% may save
+considerably while a seller spending 3% faces a net increase. The implied
+sales-weighted average does not describe a median seller or establish which
+products consumers buy after agents change discovery.
+
+The main unresolved economic mechanisms are:
+
+- **Demand and allocation.** The exercise assumes agents preserve relevant
+  purchases. It does not assume that one merchant can stop advertising today
+  without losing sales. Ad attribution is not evidence of incremental demand.
+- **Platform pricing power.** Recovery targets are arithmetic requirements,
+  not demonstrated feasible fee increases. Agents comparing multiple stores
+  could constrain Amazon's ability to recover contribution.
+- **Cost timing.** The lost contribution fraction depends on costs that Amazon
+  can actually avoid; a historical ad-profit margin is not necessarily suitable.
+- **Price response.** Pass-through is assumed. Market power, product substitution,
+  existing commissions, entry, and exit can change both its size and distribution.
+- **Replacement intermediation.** Agents may charge referrals, subscriptions,
+  merchant fees, or sponsored-placement payments. The model includes only a
+  merchant fee, with no separate consumer subscription charge.
+- **Scope.** Video and display advertising need not disappear when agents replace
+  search ads. The broad-loss scenarios deliberately extend beyond the premise.
+- **Profit accounting.** Amazon's reported non-AWS results include several
+  businesses. The analysis cannot isolate the profitability of retail without ads.
+
+Consequently, the numerical results establish plausible conditional outcomes,
+not a precise expected price change. A structural forecast would need evidence
+on agent adoption, ad incrementality, seller-level cost and sales distributions,
+avoidable advertising costs, consumer substitution, and Amazon's fee response.
+
+## Sources
+
+1. Amazon. [2025 Form 10-K](https://www.sec.gov/Archives/edgar/data/1018724/000101872426000004/amzn-20251231.htm). Tables for operating income by segment and net sales by revenue category; definitions of seller services and advertising.
+2. Marketplace Pulse. [Amazon GMV Surpassed $800 Billion in 2025](https://www.marketplacepulse.com/articles/amazon-gmv-surpassed-800-billion-in-2025). Worldwide third-party GMV estimate.
+3. Marketplace Pulse. [Amazon Takes a 50% Cut of Sellers' Revenue](https://www.marketplacepulse.com/articles/amazon-takes-a-50-cut-of-sellers-revenue), February 13, 2023. Sampled seller P&Ls and differences between resellers and private-label advertisers.
+4. SellerPlex. [Amazon PPC Benchmarks 2026: Real Data From Managed Accounts](https://sellerplex.com/amazon-ppc-benchmarks-2026/), July 2, 2026. H1 2026 managed-account methodology and TACoS benchmarks.
