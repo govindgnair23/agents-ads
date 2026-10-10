@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.quarto/
+quarto-outputs/
+amazon-advertising-agents.html
+amazon-advertising-agents_files/
+outcomes.png
+outcomes.pdf
+scenarios.csv
+sensitivity_grid.csv
+summary.json
+run-summary.txt
