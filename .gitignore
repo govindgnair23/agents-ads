@@ -12,3 +12,6 @@ scenarios.csv
 sensitivity_grid.csv
 summary.json
 run-summary.txt
+competition-outputs/
+amazon-walmart-scenarios.html
+amazon-walmart-scenarios_files/
