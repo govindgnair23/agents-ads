@@ -1,0 +1,467 @@
+---
+title: "Full agent shopping: Amazon and Walmart"
+subtitle: "Conditional favorable and adverse cases for revenue, profit, and seller incentives"
+date: "2026-10-11"
+date-format: long
+format:
+  html:
+    toc: true
+    number-sections: true
+    code-fold: true
+    code-tools: true
+    embed-resources: true
+    theme: cosmo
+jupyter: python3
+execute:
+  echo: true
+  warning: false
+  error: false
+  cache: false
+---
+
+## Question and scenario definition
+
+What happens to Amazon's and Walmart's revenue and profit if **everyone shops
+through agents**, humans stop browsing shopping pages, and all advertising on
+those pages disappears?
+
+This report implements that counterfactual directly: **100% of on-site shopping
+advertising disappears** in every named case. The model keeps television,
+streaming-video, and other off-site advertising intact. The uncertain percentages
+below describe how much of each company's *total* advertising comes from on-site
+shopping, not the fraction of website advertising that survives.
+
+Total merchandise spending and consumer prices stay fixed. Agents can redirect
+existing purchases between the two companies. This honors the hypothesis that
+search ads allocate existing purchasing intent rather than create aggregate
+demand. Fixed demand is an explicit scenario assumption; observed purchasing
+intent by itself does not prove that advertising never affects conversion,
+basket size, or category spending.
+
+The named cases describe favorable and adverse conditions, **not global
+mathematical best/worst bounds or forecasts with probabilities**. Their annual
+dollar changes apply a static shock to historical annual figures. They do not
+project a specific future calendar year or adoption timeline.
+
+## Public calibration and missing information
+
+| Input | Amazon FY2025 | Walmart FY2026, ended January 31, 2026 |
+|---|---:|---:|
+| Reported company revenue | USD 716.924bn | USD 713.163bn |
+| Advertising business | USD 68.635bn | Nearly USD 6.4bn |
+| Operating income | USD 79.975bn | USD 29.825bn |
+| Amazon non-AWS operating income | USD 34.369bn | Not applicable |
+
+Sources: [Amazon annual report](https://www.sec.gov/Archives/edgar/data/1018724/000101872426000004/amzn-20251231.htm)
+and [Walmart annual results](https://stock.walmart.com/sec-filings/all-sec-filings/content/0000104169-26-000032/earningsreleasefy26q4.htm).
+The reporting periods overlap closely but differ by one month; they are
+calibrations rather than a same-period performance comparison.
+
+[Marketplace Pulse estimates](https://www.marketplacepulse.com/articles/amazon-gmv-surpassed-800-billion-in-2025)
+Amazon merchandise spending at USD 830bn, comprising USD 255bn first-party and
+USD 575bn third-party sales. GMV is an external estimate, not company revenue.
+
+Walmart sells [on-site sponsored products](https://www.walmartconnect.com/solutions/sponsored-products)
+alongside television and other advertising. The cited public totals do not supply
+the on-site/off-site split, ad contribution lost after avoided costs, or the
+incremental profitability and ownership mix of purchases redirected by agents.
+Those variables are therefore explicit assumptions and sensitivity dimensions.
+
+An accounting complication matters for the revenue question: Walmart says its
+advertising business is recorded either in revenue or as a reduction in cost of
+sales, depending on the arrangement. Losing a cost reduction affects profit
+without directly reducing reported revenue. We show a revenue-booking midpoint
+assumption of 50%, plus a full 0–100% booking range. This 50% is **not** an
+estimate from Walmart disclosures.
+
+## Reproduce and change assumptions
+
+Keep this QMD and `competitive_scenarios.py` together. The Python module is the
+canonical executable model; its full source is displayed in the appendix. No
+online downloads are performed by the analysis. With Python 3.12, Quarto, and the
+repository's pinned dependencies installed:
+
+```bash
+python competitive_scenarios.py
+python validate_competition_report.py
+quarto render amazon-walmart-scenarios.qmd
+```
+
+The first command validates accounting and exports results and figures to
+`competition-outputs/`. The second executes the report's Python chunks without
+requiring Quarto. The third renders the HTML report. Instructions for setting up
+the Python/Jupyter environment are in `README.md` and the original report.
+
+```{python}
+#| label: competition-setup
+from dataclasses import asdict, replace
+from pathlib import Path
+import json
+import matplotlib.pyplot as plt
+import competitive_scenarios as model
+
+base = model.Assumptions()
+cases = model.named_cases()
+summary = model.export()
+
+def dollars(value):
+    return f"{value:+.2f}"
+
+def pct(value):
+    return f"{value:.2%}"
+```
+
+## Mechanics: spending, revenue, and profit differ
+
+Let $T$ be annual merchandise spending transferred **from Amazon to Walmart**.
+A negative value reverses the direction. The quantity here is consumer spending
+on goods, not Amazon's reported revenue:
+
+$$
+\Delta G_A=-T,\qquad \Delta G_W=T,\qquad \Delta G_A+\Delta G_W=0.
+$$
+
+Let $A_j$ be total advertising business, $s_j$ the assumed on-site share, $d=1$
+full agent adoption, and $m_j$ contribution lost after advertising costs avoided.
+Then on-site advertising lost and contribution lost are:
+
+$$
+L_j=d s_j A_j,\qquad C_j=m_j L_j.
+$$
+
+Amazon targets recovery of fraction $r$ of lost ad contribution through new
+seller fees. We constrain collection by an assumed maximum extra fee $f_{max}$
+per dollar of remaining marketplace sales. Let $b_A$ be the marketplace share of
+transferred purchases:
+
+$$
+B_A=575-b_A T,\qquad
+F_A=\min(rC_A, f_{max}B_A).
+$$
+
+This cap represents competitive pressure from merchant alternatives. It is an
+assumed constraint, not an estimated seller-exit response or a guarantee of
+feasibility. The fee target does not attempt to replace lost legacy commerce
+profit. Walmart charges no new replacement fee in these cases; this is an
+asymmetric assumption that can make Walmart more attractive to sellers.
+
+### Reported revenue
+
+A first-party retail sale is recognized gross. A marketplace sale contributes
+commission and services revenue, not the full value of the seller's goods.
+For marketplace share $b_j$ and existing take $\tau_j$, define:
+
+$$
+\rho_j=(1-b_j)+b_j\tau_j.
+$$
+
+Amazon's transfer mix defaults to $575/830$ and its legacy services take to
+$172.162/575$. Their weighted revenue conversion is approximately 51.5 cents per
+merchandise dollar. This is a **rough ratio calibration**, not an audited marginal
+revenue measure. Seller services include more than commissions, and some services
+may remain with Amazon even if a purchase happens elsewhere. The model's defaults
+assume the corresponding services leave with the purchase.
+
+Walmart's transferred-order marketplace share defaults to an assumed 20%, and
+its marketplace take to an illustrative 15%, yielding 83 cents of recognized
+revenue per transferred dollar. **The 20% share is not Walmart's disclosed mix.**
+We also show marketplace-heavy alternatives. Switching a product from a third-party
+marketplace sale to a first-party retailer sale changes accounting without creating
+new aggregate purchasing demand.
+
+With $h_W$ the share of lost Walmart advertising booked as revenue:
+
+$$
+\Delta R_A=-L_A+F_A-\rho_A T,\qquad
+\Delta R_W=-h_W L_W+\rho_W T.
+$$
+
+Reported company revenues need not move dollar-for-dollar in opposite directions
+even when goods spending does, because ownership and accounting differ.
+
+### Operating contribution
+
+Let $\mu_j$ be net commerce contribution per transferred merchandise dollar,
+**excluding advertising and the new replacement fees**, and $K_j$ incremental
+agent/integration costs. Commerce contribution includes existing marketplace
+fees where relevant and costs avoided or incurred for merchandise, fulfillment,
+and servicing. It is not a disclosed segment operating margin.
+
+$$
+\Delta\Pi_A=-C_A+F_A-\mu_A T-K_A,\qquad
+\Delta\Pi_W=-C_W+\mu_W T-K_W.
+$$
+
+We add these changes to historical operating income to show a static budget
+bridge. AWS, memberships, unaffected ads, and other operations are held constant.
+No fee collection costs or new-agent sales commissions are deducted from revenue;
+incremental agent costs are explicitly modeled as expenses. The model assumes
+new fees contribute dollar-for-dollar to operating income.
+
+## Default assumptions and named cases
+
+```{python}
+#| label: default-input-table
+#| output: asis
+model.markdown_table(["Assumption", "Default", "Publicly measured?"], [
+    ["Full takeover of on-site shopping", pct(base.adoption), "Scenario definition"],
+    ["Amazon total ads attributable to on-site shopping", pct(base.amazon_onsite_ad_share), "No"],
+    ["Walmart total ads attributable to on-site shopping", pct(base.walmart_onsite_ad_share), "No"],
+    ["Lost ad contribution fraction, each company", pct(base.amazon_lost_ad_contribution), "No"],
+    ["Amazon ad-contribution recovery target", pct(base.amazon_recovery_target), "No"],
+    ["Maximum Amazon extra fee / remaining marketplace sales", pct(base.amazon_fee_cap), "No"],
+    ["Net commerce contribution / transferred goods dollars", pct(base.walmart_commerce_contribution), "No"],
+    ["Walmart marketplace share of transferred purchases", pct(base.walmart_transfer_marketplace_share), "No"],
+    ["Walmart lost ads booked as revenue", pct(base.walmart_ad_revenue_booking_share), "No"],
+    ["Annual agent/integration costs per company", "USD 0.50bn", "No"],
+])
+model.markdown_table(["Case", "Transfer to Walmart, USD bn", "Amazon on-site ad share",
+                       "Walmart on-site ad share", "Amazon recovery target", "Amazon fee cap"], [
+    [r["scenario"], dollars(r["transfer_to_walmart_bn"]), pct(r["amazon_onsite_ad_share"]),
+     pct(r["walmart_onsite_ad_share"]), pct(r["amazon_recovery_target"]),
+     pct(r["amazon_fee_cap"])] for r in cases
+])
+```
+
+The Amazon-favorable case assumes USD 20bn of purchases move toward Amazon,
+50% lost ad contribution for Amazon, 90% for Walmart, 6% commerce contribution
+for each, and USD 0.2bn of extra costs per company.
+
+The Walmart-favorable case assumes USD 50bn move toward Walmart; Amazon's lost
+ad contribution fraction is 90%, while Walmart's is 70%. Walmart earns 8% net
+commerce contribution on won spending and incurs USD 0.2bn in extra costs;
+Amazon earns or loses 5% commerce contribution and incurs USD 1bn in extra costs.
+Amazon's recovery is constrained by its 2% extra fee cap.
+
+The both-adverse case transfers no purchases. Each loses 90% contribution on
+removed ad income and incurs USD 2bn of extra annual costs. This illustrates why
+the two companies need not have opposite profit outcomes even with fixed demand.
+All remaining parameters use the defaults; exact complete inputs accompany each
+CSV row and are defined in `named_cases()`.
+
+## Results: annual company revenue and profit
+
+All table amounts below are **USD billions per year**. A plus sign indicates an
+increase; a minus sign a decrease. Walmart's revenue midpoint uses the 50%
+booking assumption; the range varies that booking share from 0 to 100%.
+
+```{python}
+#| label: company-result-tables
+#| output: asis
+model.markdown_table(["Case", "Amazon revenue change", "Walmart revenue change",
+                       "Amazon profit change", "Walmart profit change"], [
+    [r["scenario"], *[dollars(r[key]) for key in ["amazon_revenue_delta_bn",
+     "walmart_revenue_delta_bn", "amazon_profit_delta_bn", "walmart_profit_delta_bn"]]]
+    for r in cases
+])
+model.markdown_table(["Case", "Amazon revenue after", "Walmart revenue after",
+                       "Walmart revenue-change booking range", "Amazon new seller fees"], [
+    [r["scenario"], f"{r['amazon_revenue_after_bn']:.2f}",
+     f"{r['walmart_revenue_after_bn']:.2f}",
+     f"{dollars(r['walmart_revenue_delta_low_bn'])} to {dollars(r['walmart_revenue_delta_high_bn'])}",
+     f"{r['amazon_new_fees_bn']:.2f}"] for r in cases
+])
+model.markdown_table(["Case", "Amazon operating income after",
+                       "Amazon non-AWS income after", "Walmart operating income after"], [
+    [r["scenario"], f"{r['amazon_operating_income_after_bn']:.2f}",
+     f"{r['amazon_non_aws_income_after_bn']:.2f}",
+     f"{r['walmart_operating_income_after_bn']:.2f}"] for r in cases
+])
+```
+
+```{python}
+#| label: fig-company-scenarios
+#| fig-cap: "Full disappearance of on-site shopping advertising: conditional annual changes at fixed goods spending and prices. Walmart revenue uses the illustrative booking midpoint. These are selected favorable/adverse states, not forecast intervals."
+#| fig-width: 12
+#| fig-height: 4.8
+charts = model.figures("competition-outputs")
+plt.close(charts[1])
+plt.figure(charts[0].number)
+plt.show()
+```
+
+### Revenue can fall while profit is protected
+
+```{python}
+#| label: substitution-explanation
+#| output: asis
+neutral = model.evaluate(base)
+print(f"In the **no-purchase-shift** case, Amazon loses "
+      f"**USD {neutral['amazon_ad_revenue_lost_bn']:.2f}bn** of on-site ad revenue. "
+      f"The associated contribution loss is **USD {neutral['amazon_ad_profit_lost_bn']:.2f}bn**. "
+      f"Replacement fees collect that contribution target, but company revenue still falls "
+      f"**USD {-neutral['amazon_revenue_delta_bn']:.2f}bn**, or "
+      f"**{-neutral['amazon_revenue_change_pct']:.2%}**. Profit changes only by the "
+      f"additional **USD {base.amazon_extra_agent_cost_bn:.2f}bn** in agent costs.\n")
+```
+
+This follows from $F_A=m_A L_A$: recovering lost contribution leaves company
+revenue lower by $(1-m_A)L_A$, offset by the corresponding advertising costs
+avoided. If costs cannot be avoided and $m_A$ approaches 100%, that distinction
+shrinks. A target to recover **gross advertising revenue** is a different, larger
+fee target than the contribution recovery modeled here.
+
+Without any replacement fees or purchase shifts, the illustrative 50–90% Amazon
+on-site share means a revenue loss of USD 34.3–61.8bn. Walmart's 20–80% share means
+lost advertising economic income of USD 1.28–5.12bn, but the reported-revenue
+effect depends on booking. These are assumption ranges, not estimated ad splits.
+As a deliberately broader upper stress, losing *every* ad dollar would remove
+USD 68.635bn from Amazon revenue before offsets; it would not preserve Prime Video
+and therefore lies outside the main full-on-site-takeover definition.
+
+## Walmart's break-even opportunity
+
+With no new Walmart service fees, it needs transferred merchandise spending of:
+
+$$
+T_W^*=\frac{C_W+K_W}{\mu_W}
+$$
+
+to hold operating contribution constant. This is a profit threshold, not a
+threshold for reported revenue growth. A company can gain revenue while losing
+profit when it exchanges high-contribution ads for lower-contribution retail.
+
+```{python}
+#| label: walmart-breakeven-table
+#| output: asis
+threshold_rows = []
+for share in [.20, .50, .80]:
+    for margin in [.02, .05, .08]:
+        r = model.evaluate(replace(base, walmart_onsite_ad_share=share,
+                                   walmart_commerce_contribution=margin))
+        threshold_rows.append([pct(share), pct(margin),
+                               f"{r['walmart_profit_breakeven_transfer_bn']:.2f}"])
+model.markdown_table(["Walmart on-site share of total ads", "Net commerce contribution",
+                       "Required annual merchandise transfer, USD bn"], threshold_rows)
+```
+
+```{python}
+#| label: fig-walmart-breakeven
+#| fig-cap: "Walmart profit break-even at different assumed on-site advertising shares. All lines use 70% lost ad contribution, 5% net commerce contribution, and USD 0.5bn in additional costs."
+#| fig-width: 8
+#| fig-height: 4.5
+charts = model.figures()
+plt.close(charts[0])
+plt.figure(charts[1].number)
+plt.show()
+```
+
+## Marketplace versus own-inventory accounting
+
+For the same USD 20bn of consumer purchases redirected toward Walmart, different
+ownership mixes produce very different reported-revenue gains. Below, net commerce
+contribution stays at the assumed 5% solely to isolate accounting. In reality,
+ownership and contribution need not vary independently.
+
+```{python}
+#| label: ownership-mix-table
+#| output: asis
+model.markdown_table(["Walmart transferred-order marketplace share",
+                       "Commerce revenue gained, USD bn", "Total revenue change, USD bn",
+                       "Operating contribution change, USD bn"], [
+    [pct(beta), f"{r['walmart_commerce_revenue_delta_bn']:.2f}",
+     dollars(r["walmart_revenue_delta_bn"]), dollars(r["walmart_profit_delta_bn"])]
+    for beta in [0, .20, .80, 1.0]
+    for r in [model.evaluate(replace(base, transfer_to_walmart_bn=20,
+                                    walmart_transfer_marketplace_share=beta))]
+])
+```
+
+Do not count the entire seller's sale as platform revenue, add a marketplace
+commission on top of that sale, or treat group operating margin as the marginal
+profit from a transferred order. Those shortcuts would distort the comparison.
+
+## Seller incentives with consumer prices held fixed
+
+The default fee-substitution case imposes the derived Amazon extra fee on all
+remaining marketplace sales. For illustration, Walmart sellers previously spend
+4% of sales on ads; we compare Amazon sellers previously spending 3%, 10%, or 15%.
+All of their modeled on-site ad spending disappears. Walmart adds no new fee.
+These seller advertising rates are **hypothetical accounts**, not market-wide
+averages or a representative Walmart benchmark.
+
+```{python}
+#| label: seller-incentive-table
+#| output: asis
+seller_rows = [model.seller_comparison(neutral["amazon_new_fee_rate"], amazon_tacos=a)
+               for a in [.03, .10, .15]]
+model.markdown_table(["Amazon original ad spending / sales", "Amazon extra fee / sales",
+                       "Amazon seller contribution change, pp",
+                       "Walmart seller contribution change, pp",
+                       "Change in Walmart advantage, pp"], [
+    [pct(r["amazon_original_tacos"]), pct(r["amazon_replacement_fee_rate"]),
+     f"{100*r['amazon_seller_contribution_change']:+.2f}",
+     f"{100*r['walmart_seller_contribution_change']:+.2f}",
+     f"{100*r['change_in_walmart_advantage']:+.2f}"] for r in seller_rows
+])
+```
+
+Uniform service fees can disadvantage low-ad-spending merchants while leaving
+heavy advertisers better off. Walmart becomes relatively more attractive when
+Amazon's added fee exceeds Amazon ad savings minus Walmart ad savings, holding
+other costs and prices constant. This does not predict complete seller migration:
+sales volume, inventory turnover, channel setup costs, existing fulfillment,
+and the ability to sell profitably on both channels also matter.
+
+The merchandise transfer $T$ remains an exogenous scenario input. Neither seller
+preferences nor consumer platform choices are estimated as a function of fees.
+Consequently, the headline cases are accounting-consistent but not demonstrated
+competitive equilibria. Public data do not identify a uniform extra fee that all
+merchants would accept while maintaining current prices and participation.
+
+## Sensitivity, verification, and interpretation
+
+The CSV sensitivity grid contains 1,215 parameter combinations for on-site ad
+shares, Amazon fee caps, merchandise transfers, Walmart commerce contribution,
+and transferred-order marketplace mix. All use full takeover. A grid's frequency
+of positive outcomes is not a probability and is not presented as one.
+
+```{python}
+#| label: competition-validation
+#| output: asis
+print(model.validate()+".\n")
+print(f"Exported **{len(cases)} named cases** and "
+      f"**{summary['grid_rows']:,} sensitivity rows**, together with seller results "
+      "and PNG/PDF charts in `competition-outputs/`.\n")
+```
+
+The main story is conditional:
+
+- **Amazon can protect contribution without protecting reported revenue** by
+  replacing profitable ad payments with fees and avoiding some ad operating costs.
+  Its ability to collect those fees is constrained by merchant alternatives.
+- **Walmart has a real opportunity to gain purchases from Amazon**, but winning
+  low-contribution retail sales does not automatically offset lost ad contribution.
+  Its reported revenue gain depends strongly on whether it owns inventory.
+- **Both companies can lose profit while aggregate demand stays fixed.** Sellers,
+  consumers, or agent providers can capture former advertising payments.
+- **Consumer prices need not rise.** This extension holds them constant; losses,
+  fees, and savings instead affect contribution and participation incentives.
+
+The important limits are undisclosed on-site ad shares and marginal contributions;
+the assumed recoverable fee cap; order ownership and geography; capacity to fulfill
+transferred purchases; unchanged AWS, memberships, and unaffected ads; constant
+consumer prices; no endogenous seller exit, conversion, or channel choice; and
+no new sponsored-placement business inside the agents themselves. Commerce
+contribution may be lower, zero, or negative on some won orders, especially during
+expansion. Positive 2–8% margins are illustrative choices, not evidence of capacity
+or profitability at the modeled transfer volumes.
+
+## Complete executable model source
+
+The report imports this adjacent file so the command-line model and report use
+exactly the same calculations. Editing the module changes the rendered results.
+
+```{python}
+#| label: model-source-appendix
+#| output: asis
+#| echo: false
+print("```python\n"+Path("competitive_scenarios.py").read_text(encoding="utf-8")+"\n```\n")
+```
+
+## Sources
+
+1. [Amazon 2025 Form 10-K](https://www.sec.gov/Archives/edgar/data/1018724/000101872426000004/amzn-20251231.htm): revenue categories, seller-services definition, and operating income by segment.
+2. [Walmart FY2026 annual earnings release](https://stock.walmart.com/sec-filings/all-sec-filings/content/0000104169-26-000032/earningsreleasefy26q4.htm): total revenue, operating income, advertising-business size, and advertising accounting footnote.
+3. [Marketplace Pulse: Amazon GMV Surpassed $800 Billion in 2025](https://www.marketplacepulse.com/articles/amazon-gmv-surpassed-800-billion-in-2025): estimated merchandise spending and first-/third-party split.
+4. [Walmart Connect: Sponsored Products](https://www.walmartconnect.com/solutions/sponsored-products): on-site search, browse, and product-page advertising.
