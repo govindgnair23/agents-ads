@@ -23,6 +23,11 @@ execute:
 
 ## Research question and result
 
+For the subsequent full-agent-takeover analysis of Amazon and Walmart together,
+including company revenue, profit, and fixed-demand transfers, see the companion
+[`amazon-walmart-scenarios.qmd`](amazon-walmart-scenarios.qmd). This original report
+retains its initial seller-cost and price-pass-through calibration.
+
 If shopping agents replace paid product discovery on Amazon, can merchants'
 advertising savings offset the fees Amazon might impose to recover lost profit?
 
